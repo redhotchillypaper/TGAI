@@ -27,6 +27,7 @@ async def main():
     channel = await bot.get_entity(link_to_channel)
     print('Bot is running. Connected:', bot.is_connected())
     await bot.send_message(channel, "TEST TEXT") #change text to POSTS
+    
     await bot.run_until_disconnected()
 
 
