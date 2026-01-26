@@ -1,47 +1,72 @@
+import os
 import asyncio
+from collections import defaultdict
 from telethon import TelegramClient, events
 from dotenv import load_dotenv
-import os
-
-load_dotenv() # loading .env
-
-# TODO:
-# Second section, divide the file into two
-# real functions
-# change text to POSTS
+from config import user_client, bot_client, SOURCE_CHANNEL, POST_CHANNEL
+from ai_rephrase import ai_rephrase
 
 
 
-# .env variables:
-api_id = int(os.getenv('API_ID'))
-api_hash = os.getenv('API_HASH')
-bot_token = os.getenv('BOT_TOKEN')
-link_to_channel = os.getenv('CHANNEL_LINK')
-
-# session declaration 
-bot = TelegramClient('bot_session', api_id, api_hash)
+async def post_posts(channel, text):
+    await bot_client.send_message(channel, await ai_rephrase(text))
 
 
-async def main():
-    await bot.start(bot_token=bot_token)
-    channel = await bot.get_entity(link_to_channel)
-    print('Bot is running. Connected:', bot.is_connected())
-    await bot.send_message(channel, "TEST TEXT") #change text to POSTS
+albums = defaultdict(list)
+
+@user_client.on(events.NewMessage(chats=SOURCE_CHANNEL))
+async def handler(event):
+    if not event.message.grouped_id:  # Single 
+        if event.message.media:
+            media_file = await event.download_media(file='temp/')
+            await bot_client.send_file(POST_CHANNEL, media_file, caption= await ai_rephrase(event.message.text) or None)
+            os.remove(media_file)
+        else:
+            await post_posts(POST_CHANNEL, event.message.text)
+        return
     
-    await bot.run_until_disconnected()
+    # Album: ONLY first msg starts task
+    album_id = event.message.grouped_id
+    albums[album_id].append(event.message)
+    
+    # Task only on FIRST msg
+    if len(albums[album_id]) == 1:
+        asyncio.create_task(process_album(album_id))
+    return  # Later msgs SKIP processing
 
+async def process_album(album_id):
+    await asyncio.sleep(2)  # Full album
+    
+    album_msgs = albums[album_id][:]  # Snapshot
+    albums[album_id].clear()  # Block dups IMMEDIATE
+    
+    if len(album_msgs) >= 2:
+        files = []
+        for msg in album_msgs:
+            if msg.media:
+                file_path = await msg.download_media(file='temp/')
+                files.append(file_path)
+        
+        await bot_client.send_file(
+            POST_CHANNEL,
+            files,
+            caption= await ai_rephrase(album_msgs[0].text) or None
+        )
+        
+        for f in files:
+            os.remove(f)
+        
+async def main():
+    await user_client.start(phone=lambda: input('Phone: '))
+    await bot_client.start()
+    print(f"Listening {SOURCE_CHANNEL} → {POST_CHANNEL}")
+    await asyncio.gather(
+        user_client.run_until_disconnected(),
+        bot_client.run_until_disconnected()
+    )
 
-asyncio.run(main())
-
-# for testing shi
-@bot.on(events.NewMessage(pattern='/start'))
-async def start_handler(event):
-    await event.reply('hello')
-
-
-#  (public) or 'https://t.me/+hash' for private. Join if required: from telethon.tl.functions.channels import JoinChannelRequest; await client(JoinChannelRequest(channel)).
-
-# ​
-# Posting Messages
-
-# Require post permissions: await client.send_message(channel, 'Hello from bot!'). Supports text, media: await client.send_file(channel, photo, caption='Post'). Use silent=True to avoid notifications
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nStopped")
